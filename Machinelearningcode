@@ -1,0 +1,770 @@
+#Install the UCI machine learning repo
+!pip install ucimlrepo
+
+#Import the packages
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, recall_score, confusion_matrix, classification_report
+from sklearn.metrics import ConfusionMatrixDisplay, roc_curve, roc_auc_score, auc
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import plot_tree
+import shap
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (classification_report,
+                             confusion_matrix,
+                             roc_auc_score,
+                             f1_score,
+                             ConfusionMatrixDisplay,
+                             RocCurveDisplay)
+
+#get the dataset
+from ucimlrepo import fetch_ucirepo
+
+# fetch dataset
+diabetes = fetch_ucirepo(id=296)
+
+# data (as pandas dataframes)
+X = diabetes.data.features
+y = diabetes.data.targets
+
+# metadata
+print(diabetes.metadata)
+
+# variable information
+print(diabetes.variables)
+
+
+df = pd.concat([diabetes.data.features, diabetes.data.targets], axis=1)
+
+# view dataframe
+print(df.shape)
+df.head()
+
+
+# Check for missing values in all columns
+missing = df.isnull().sum()
+missing_pct = (missing / len(df) * 100).round(2)
+missing_df = pd.DataFrame({'missing_count': missing, 'missing_pct': missing_pct})
+print("\nMissingness overview:")
+print(missing_df[missing_df['missing_count'] > 0].sort_values('missing_pct', ascending=False))
+
+
+# Check cardinality for all columns - how many different answers exist for each column
+print("\nCardinality overview:")
+print(df.nunique().sort_values(ascending=False))
+
+
+#Binarise the target variable of length of hospital stay (1 = >3 days, 0 = ≤3 days)
+df['long_stay'] = (df['time_in_hospital'] > 3).astype(int)
+
+# View unique values long stay and variable type
+print(df["long_stay"].unique())
+print(df["long_stay"].dtype)
+
+# Check the distribution
+print(df['long_stay'].value_counts())
+print(df['long_stay'].value_counts(normalize=True) * 100)
+
+
+# Drop original time in hospital
+df = df.drop(["time_in_hospital"], axis=1)
+
+# View dataframe - check it has been dropped
+print(df.shape)
+df.head()
+
+
+# View dataframe - check it has been dropped
+pd.set_option('display.max_columns', None)
+print(df.shape)
+df.head(13)
+
+
+#Remove terminal dispositions - (define eligible population)
+#11: Discharged/transferred to a hospital (or another facility) to receive inpatient care
+#13: Discharged/transferred to an outpatient clinic or another location within the same facility
+#14: Transferred to another type of healthcare institution not explicitly defined elsewhere
+#19: Discharged/transferred to a designated disaster alternative care site
+#20: Patient expired (Deceased)
+terminal_dispositions = [11, 13, 14, 19, 20]
+
+df = df[~df['discharge_disposition_id'].isin(terminal_dispositions)]
+
+# Reset index to prevent misalignment during ont-hot encoding
+df = df.reset_index(drop=True)
+
+print(f"Dataset shape after removing terminal dispositions: {df.shape}")
+
+
+# View unique values long stay and variable type
+print(df["long_stay"].unique())
+print(df["long_stay"].dtype)
+
+# Check the distribution
+print(df['long_stay'].value_counts())
+print(df['long_stay'].value_counts(normalize=True) * 100)
+
+
+# Map ICD-9 diagnosis codes to broader clinical categories -
+
+def map_icd9_to_category(code):
+    """
+    Maps a raw ICD-9 code (as stored in diag_1) to a clinical category.
+    Handles numeric codes, V-codes, E-codes, and missing values.
+    """
+    if pd.isna(code):
+        return 'Other'
+
+    code = str(code).strip()
+
+    # V-codes (supplementary classification) and E-codes (external causes)
+    if code.startswith('V') or code.startswith('E'):
+        return 'Other'
+
+    try:
+        code_num = float(code)
+    except ValueError:
+        return 'Other'
+
+    # ICD-9 numeric ranges mapped to clinical categories
+    if 390 <= code_num <= 459 or code_num == 785:
+        return 'Circulatory'
+    elif 460 <= code_num <= 519 or code_num == 786:
+        return 'Respiratory'
+    elif 520 <= code_num <= 579 or code_num == 787:
+        return 'Digestive'
+    elif code_num == 250:
+        return 'Diabetes'
+    elif 800 <= code_num <= 999:
+        return 'Injury'
+    elif 710 <= code_num <= 739:
+        return 'Musculoskeletal'
+    elif 580 <= code_num <= 629 or code_num == 788:
+        return 'Genitourinary'
+    elif 140 <= code_num <= 239:
+        return 'Neoplasms'
+    else:
+        return 'Other'
+
+# Apply the mapping
+df['diag1_category'] = df['diag_1'].apply(map_icd9_to_category)
+df['diag2_category'] = df['diag_2'].apply(map_icd9_to_category)
+df['diag3_category'] = df['diag_3'].apply(map_icd9_to_category)
+
+# Drop the original high-cardinality columns
+df = df.drop(['diag_1'], axis=1)
+df = df.drop(['diag_2'], axis=1)
+df = df.drop(['diag_3'], axis=1)
+
+# Review the distribution of categories
+print(df['diag1_category'].value_counts())
+print(df['diag2_category'].value_counts())
+print(df['diag3_category'].value_counts())
+print(f"\nDataset shape after ICD-9 mapping: {df.shape}")
+
+
+# Fill NaN with 'Not_tested' to preserve information as a category
+df['A1Cresult'] = df['A1Cresult'].fillna('Not_tested')
+df['max_glu_serum'] = df['max_glu_serum'].fillna('Not_tested')
+
+print(df['A1Cresult'].value_counts())
+print(df['max_glu_serum'].value_counts())
+
+
+# Compare length of stay rates: weight recorded vs missing
+print('\nlength of stay — weight recorded vs missing:')
+print(df.groupby(df['weight'].isna())['long_stay'].mean())
+print('(True = missing, False = recorded)')
+
+
+# Drop weight feature, as well as payer code,
+df.drop(columns=['weight', 'payer_code',
+                 'readmitted'],
+                 inplace=True,
+                 errors='ignore')
+
+# View dataframe
+print(df.shape)
+
+
+# Get value counts for admission_type_id,	discharge_disposition_id and admission_source_id
+print(df['admission_type_id'].value_counts())
+print(df['discharge_disposition_id'].value_counts())
+print(df['admission_source_id'].value_counts())
+
+
+# Collapse individual diabetes drug columns into a single count
+drug_cols = [
+    'metformin', 'repaglinide', 'nateglinide', 'chlorpropamide',
+    'glimepiride', 'glipizide', 'glyburide', 'tolbutamide',
+    'pioglitazone', 'rosiglitazone', 'acarbose', 'miglitol',
+    'troglitazone', 'tolazamide', 'examide', 'citoglipton',
+    'glyburide-metformin', 'glipizide-metformin',
+    'glimepiride-pioglitazone', 'metformin-rosiglitazone',
+    'metformin-pioglitazone', 'acetohexamide'
+]
+
+# Only use columns that exist in the dataframe
+drug_cols = [c for c in drug_cols if c in df.columns]
+
+# Count how many distinct diabetes drugs were prescribed per encounter
+df['num_diabetes_drugs'] = (df[drug_cols] != 'No').sum(axis=1)
+
+# Drop the individual drug columns
+df = df.drop(columns=drug_cols)
+
+print(f"Collapsed {len(drug_cols)} drug columns into 'num_diabetes_drugs'")
+print(f"Dataset shape: {df.shape}")
+print(df['num_diabetes_drugs'].describe())
+
+
+# View all features
+for col in df.columns:
+    print(col)
+
+
+# Perform One-hot encoding on the categorical features
+columns = ['race', 'gender', 'admission_type_id', 'discharge_disposition_id',
+           'admission_source_id', 'diabetesMed', 'insulin', 'change',
+           'diag1_category', 'diag2_category', 'diag3_category',
+           'A1Cresult', 'max_glu_serum', 'medical_specialty']
+encoder = OneHotEncoder(sparse_output=False, drop='first')
+for col in columns:
+  encoded = encoder.fit_transform(df[[col]])
+  encoded_df = pd.DataFrame(encoded, columns=encoder.get_feature_names_out([col]))
+  df = pd.concat([df, encoded_df], axis=1)
+
+# Remove the original columns from the dataset
+df = df.drop(columns=columns)
+
+# view dataset
+print(df.shape)
+df.head()
+
+
+#Perform ordinal encoding for 'age' - convert categorical variables with an order into numbers that r flect the order
+encoder = OrdinalEncoder(categories=[['[0-10)', '[10-20)', '[20-30)', '[30-40)',
+                                      '[40-50)', '[50-60)', '[60-70)', '[70-80)',
+                                      '[80-90)', '[90-100)']
+                                     ])
+df['age'] = encoder.fit_transform(df[['age']])
+
+# View dataset
+df.head()
+
+
+# print unique values for age
+for group in df['age'].unique():
+    print(group)
+
+
+#Further feature engineering
+# confirm what columns are in your dataframe
+print(df[['number_outpatient', 'number_emergency',
+          'number_inpatient', 'num_medications']].head(10))
+
+
+# Combine all visit types into one feature that details total visits (feature engineering)
+df['total_visits'] = (df['number_outpatient'] +
+                      df['number_emergency'] +
+                      df['number_inpatient'])
+
+# Check it looks correct
+print("Total visits summary:")
+print(df['total_visits'].describe())
+print(f"\nMin visits: {df['total_visits'].min()}")
+print(f"Max visits: {df['total_visits'].max()}")
+print(f"Mean visits: {df['total_visits'].mean():.2f}")
+
+
+# Then drop the original columns
+df.drop(columns=['number_outpatient',
+                 'number_emergency',
+                 'number_inpatient'], inplace=True)
+
+# Confirm they have been removed
+print(df.shape)
+print(df.columns.tolist())
+
+
+#Define the new X dataframe and y
+X = df.drop(columns=['long_stay'])  #everything except the target
+y = df['long_stay']                 #the target
+
+
+# Select only the truly continuous features
+continuous_cols = [
+    'age',
+    'num_lab_procedures',
+    'num_procedures',
+    'num_medications',
+    'number_diagnoses',
+    'num_diabetes_drugs',
+    'total_visits',
+]
+
+X_continuous = X[continuous_cols]
+
+# Add long_stay to the continuous features
+X_continuous_with_target = X[continuous_cols].copy()
+X_continuous_with_target['long_stay'] = y
+
+#make the correlation matrix
+corr_matrix = X_continuous_with_target.corr()
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(corr_matrix,
+            mask=mask,
+            annot=True,
+            fmt='.2f',
+            cmap='coolwarm',
+            center=0,
+            square=True,
+            linewidths=0.5)
+plt.title('Correlation Matrix (Continuous Features)')
+plt.tight_layout()
+plt.show()
+
+
+num_cols = ['num_lab_procedures',
+            'num_procedures',
+            'num_medications',
+            'number_diagnoses',
+            'total_visits']   # your engineered feature
+
+# Check these columns exist and see their ranges before scaling
+print("Before scaling:")
+print(df[num_cols].describe().round(2))
+
+
+#Start the logistic regression
+# Step 1 - define X (features) and y (target)
+X = df.drop(columns=['long_stay'])
+y = df['long_stay']
+
+print(f"X shape: {X.shape}")
+print(f"y shape: {y.shape}")
+
+# Step 2 - split into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,        # 80% training, 20% testing
+    random_state=42,      # ensures same split every time you run it
+    stratify=y            # keeps class balance the same in both sets
+)
+
+# Step 3 - confirm the shapes
+print(f"\nX_train shape: {X_train.shape}")
+print(f"X_test shape:  {X_test.shape}")
+print(f"y_train shape: {y_train.shape}")
+print(f"y_test shape:  {y_test.shape}")
+
+# Step 4 - confirm class balance is preserved in both sets
+print(f"\nTraining set class balance:")
+print(y_train.value_counts(normalize=True) * 100)
+
+print(f"\nTest set class balance:")
+print(y_test.value_counts(normalize=True) * 100)
+
+
+#Scale (after splitting train and test data)
+# Initialise scaler
+from sklearn.preprocessing import StandardScaler
+scaler = StandardScaler()
+
+# Fit on training data only then transform both sets
+X_train[num_cols] = scaler.fit_transform(X_train[num_cols])
+X_test[num_cols] = scaler.transform(X_test[num_cols])
+
+print("Scaling complete")
+
+
+# Define and train model
+from sklearn.linear_model import LogisticRegression
+
+lr_model = LogisticRegression(
+    max_iter=1000,
+    class_weight='balanced',
+    random_state=42
+)
+
+lr_model.fit(X_train, y_train)
+
+print("Model trained successfully")
+
+
+#Generate Predictions
+
+lr_pred = lr_model.predict(X_test)
+
+# Predicted probabilities
+lr_prob = lr_model.predict_proba(X_test)[:, 1]
+
+
+#print the metrics
+print("=" * 50)
+print("LOGISTIC REGRESSION RESULTS")
+print("=" * 50)
+print(f"\nAUC-ROC Score:     {roc_auc_score(y_test, lr_prob):.4f}")
+print(f"Weighted F1 Score: {f1_score(y_test, lr_pred, average='weighted'):.4f}")
+print("\nClassification Report:")
+print(classification_report(y_test, lr_pred,
+      target_names=['Short stay (0)', 'Long stay (1)']))
+
+
+
+#Bootstrapping to get AUC-ROC with 95% CI
+from sklearn.utils import resample
+
+n_bootstraps = 1000
+auc_scores = []
+
+for i in range(n_bootstraps):
+    # Resample test set with replacement
+    X_bs, y_bs, prob_bs = resample(X_test, y_test, lr_prob, random_state=i)
+
+    # Skip iteration if only one class present in resample
+    if len(y_bs.unique()) < 2:
+        continue
+
+    auc_scores.append(roc_auc_score(y_bs, prob_bs))
+
+lower = np.percentile(auc_scores, 2.5)
+upper = np.percentile(auc_scores, 97.5)
+mean_auc = np.mean(auc_scores)
+
+print(f"\nAUC-ROC: {mean_auc:.4f} (95% CI: {lower:.4f}–{upper:.4f})")
+
+
+# ── Compare Train vs Test AUC ────────────────────────────────────────────
+lr_prob_train = lr_model.predict_proba(X_train)[:, 1]
+lr_prob_test  = lr_model.predict_proba(X_test)[:, 1]
+
+train_auc = roc_auc_score(y_train, lr_prob_train)
+test_auc  = roc_auc_score(y_test,  lr_prob_test)
+
+print("=" * 50)
+print("TRAIN vs TEST AUC COMPARISON")
+print("=" * 50)
+print(f"Train AUC: {train_auc:.4f}")
+print(f"Test AUC:  {test_auc:.4f}")
+print(f"Difference: {abs(train_auc - test_auc):.4f}")
+
+
+#Confusion Matrix
+plt.figure(figsize=(6, 5))
+
+ConfusionMatrixDisplay(
+    confusion_matrix(y_test, lr_pred),
+    display_labels=['Short stay', 'Long stay']
+).plot(colorbar=False, cmap='Blues')
+
+plt.title('Logistic Regression Confusion Matrix', fontsize=13)
+plt.tight_layout()
+plt.savefig('lr_confusion_matrix.png', dpi=300)
+plt.show()
+
+
+cm = confusion_matrix(y_test, lr_pred)
+
+TN = cm[0,0]
+FP = cm[0,1]
+FN = cm[1,0]
+TP = cm[1,1]
+
+# Calculate accuracy, recall and precision
+accuracy = (TP + TN) / (TP + TN + FP + FN)
+recall = TP / (TP + FN)
+precision = TP / (TP + FP)
+
+print(f"Accuracy: {accuracy:.2f}")
+print(f"Recall: {recall:.2f}")
+print(f"Precision: {precision:.2f}")
+
+
+#ROC Curve
+plt.figure(figsize=(7, 6))
+
+RocCurveDisplay.from_predictions(
+    y_test,
+    lr_prob,
+    name='Logistic Regression',
+    color='steelblue'
+)
+
+plt.plot([0, 1], [0, 1], 'k--', label='Random chance')
+plt.title('Logistic Regression ROC Curve', fontsize=13)
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.legend()
+plt.tight_layout()
+plt.savefig('lr_roc_curve.png', dpi=300)
+plt.show()
+
+
+#Cross Validation
+lr_cv = cross_val_score(lr_model, X_train, y_train,
+                        cv=5,
+                        scoring='roc_auc',
+                        n_jobs=-1)
+
+print("5-Fold Cross Validation:")
+print(f"AUC scores: {lr_cv.round(4)}")
+print(f"Mean AUC:   {lr_cv.mean():.4f}")
+print(f"Std Dev:    {lr_cv.std():.4f}")
+
+
+#Start random forests model
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.metrics import (classification_report,
+                             confusion_matrix,
+                             roc_auc_score,
+                             f1_score,
+                             ConfusionMatrixDisplay,
+                             RocCurveDisplay)
+from sklearn.model_selection import cross_val_score
+
+
+#Train the Model
+# Define and train model
+rf_model = RandomForestClassifier(
+    n_estimators=100,          # number of trees
+    class_weight='balanced',   # handles class imbalance
+    random_state=42,           # ensures reproducibility
+    n_jobs=-1                  # uses all CPU cores to speed up training
+)
+
+rf_model.fit(X_train, y_train)
+
+print("Random Forest model trained successfully")
+
+
+#Generate Predictions
+# Predicted class labels
+rf_pred = rf_model.predict(X_test)
+
+# Predicted probabilities (needed for AUC-ROC)
+rf_prob = rf_model.predict_proba(X_test)[:, 1]
+
+
+#Print Metrics
+print("=" * 50)
+print("RANDOM FOREST RESULTS")
+print("=" * 50)
+print(f"\nAUC-ROC Score:     {roc_auc_score(y_test, rf_prob):.4f}")
+print(f"Weighted F1 Score: {f1_score(y_test, rf_pred, average='weighted'):.4f}")
+print("\nClassification Report:")
+print(classification_report(y_test, rf_pred,
+      target_names=['Short stay (0)', 'Long stay (1)']))
+
+
+# HYPERPARAMETER TRAINING - REDUCED version
+param_grid = {
+    'n_estimators': [100, 200, 300],
+    'max_depth': [10, 20, None],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2],
+    'class_weight': ['balanced']
+}
+
+rf_tuned = RandomizedSearchCV(
+    estimator=RandomForestClassifier(random_state=42),
+    param_distributions=param_grid,
+    n_iter=20,           # number of parameter combinations to try
+    cv=3,                #3 fold cross validation
+    scoring='roc_auc', #optimised for AUC
+    random_state=42,
+    n_jobs=-1, #Use all available cores
+    verbose=2
+)
+
+rf_tuned.fit(X_train, y_train)
+
+#view best parameters
+print("Best parameters:", rf_tuned.best_params_)
+print("Best AUC (CV):", rf_tuned.best_score_)
+
+# Retrain with best parameters
+rf_best = rf_tuned.best_estimator_
+
+# Evaluate
+rf_pred = rf_best.predict(X_test)
+rf_prob = rf_best.predict_proba(X_test)[:, 1]
+
+print(f"AUC-ROC: {roc_auc_score(y_test, rf_prob):.4f}")
+print(classification_report(y_test, rf_pred,
+      target_names=['Short stay (0)', 'Long stay (1)']))
+
+
+#Random Forest AUC-ROC with 95% Confidence Interval (Bootstrap)
+
+n_bootstraps = 1000
+rf_auc_scores = []
+
+for i in range(n_bootstraps):
+    X_bs, y_bs, prob_bs = resample(X_test, y_test, rf_prob, random_state=i)
+
+    if len(y_bs.unique()) < 2:
+        continue
+
+    rf_auc_scores.append(roc_auc_score(y_bs, prob_bs))
+
+lower = np.percentile(rf_auc_scores, 2.5)
+upper = np.percentile(rf_auc_scores, 97.5)
+mean_auc = np.mean(rf_auc_scores)
+
+print(f"Random Forest AUC-ROC: {mean_auc:.4f} (95% CI: {lower:.4f}-{upper:.4f})")
+
+
+#Confusion Matrix
+plt.figure(figsize=(6, 5))
+
+ConfusionMatrixDisplay(
+    confusion_matrix(y_test, rf_pred),
+    display_labels=['Short stay', 'Long stay']
+).plot(colorbar=False, cmap='Purples')
+
+plt.title('Random Forest Confusion Matrix', fontsize=13)
+plt.tight_layout()
+plt.savefig('rf_confusion_matrix.png', dpi=300)
+plt.show()
+
+
+# Random Forest confusion matrix values
+cm_rf = confusion_matrix(y_test, rf_pred)
+
+TN = cm_rf[0,0]
+FP = cm_rf[0,1]
+FN = cm_rf[1,0]
+TP = cm_rf[1,1]
+
+# Calculate accuracy, recall and precision
+accuracy = (TP + TN) / (TP + TN + FP + FN)
+recall = TP / (TP + FN)
+precision = TP / (TP + FP)
+
+print(f"Accuracy: {accuracy:.2f}")
+print(f"Recall: {recall:.2f}")
+print(f"Precision: {precision:.2f}")
+
+
+#ROC Curve
+plt.figure(figsize=(7, 6))
+
+RocCurveDisplay.from_predictions(
+    y_test,
+    rf_prob,
+    name='Random Forest',
+    color='purple'
+)
+
+plt.plot([0, 1], [0, 1], 'k--', label='Random chance')
+plt.title('Random Forest ROC Curve', fontsize=13)
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.legend()
+plt.tight_layout()
+plt.savefig('rf_roc_curve.png', dpi=300)
+plt.show()
+
+
+#Cross Validation
+rf_cv = cross_val_score(rf_model, X_train, y_train,
+                        cv=5,
+                        scoring='roc_auc',
+                        n_jobs=-1)
+
+print("5-Fold Cross Validation:")
+print(f"AUC scores: {rf_cv.round(4)}")
+print(f"Mean AUC:   {rf_cv.mean():.4f}")
+print(f"Std Dev:    {rf_cv.std():.4f}")
+
+
+#Feature Importance
+# Get feature importances
+feat_importance = pd.Series(
+    rf_model.feature_importances_,
+    index=X_train.columns
+).sort_values(ascending=False).head(15)
+
+# Plot
+plt.figure(figsize=(10, 6))
+feat_importance.plot(kind='bar',
+                     color='purple',
+                     alpha=0.8,
+                     edgecolor='black')
+plt.title('Top 15 Feature Importances - Random Forest', fontsize=13)
+plt.xlabel('Feature')
+plt.ylabel('Importance Score')
+plt.xticks(rotation=45, ha='right')
+plt.tight_layout()
+plt.savefig('rf_feature_importance.png', dpi=300)
+plt.show()
+
+print("\nTop 15 most important features:")
+print(feat_importance.round(4))
+
+
+#Compare Both Models Side by Side
+results = pd.DataFrame({
+    'Metric': [
+        'AUC-ROC',
+        'Weighted F1',
+        'CV Mean AUC',
+        'CV Std Dev'
+    ],
+    'Logistic Regression': [
+        roc_auc_score(y_test, lr_prob),
+        f1_score(y_test, lr_pred, average='weighted'),
+        lr_cv.mean(),
+        lr_cv.std()
+    ],
+    'Random Forest': [
+        roc_auc_score(y_test, rf_prob),
+        f1_score(y_test, rf_pred, average='weighted'),
+        rf_cv.mean(),
+        rf_cv.std()
+    ]
+})
+
+results = results.set_index('Metric').round(4)
+print("\nModel Comparison:")
+print(results.to_string())
+
+
+#ROC Curves Overlaid for Comparison
+fig, ax = plt.subplots(figsize=(8, 6))
+
+RocCurveDisplay.from_predictions(
+    y_test, lr_prob,
+    name='Logistic Regression',
+    color='steelblue',
+    ax=ax
+)
+
+RocCurveDisplay.from_predictions(
+    y_test, rf_prob,
+    name='Random Forest',
+    color='purple',
+    ax=ax
+)
+
+ax.plot([0, 1], [0, 1], 'k--', label='Random chance')
+ax.set_title('ROC Curve Comparison', fontsize=14)
+ax.set_xlabel('False Positive Rate')
+ax.set_ylabel('True Positive Rate')
+ax.legend()
+plt.tight_layout()
+plt.savefig('roc_comparison.png', dpi=300)
+plt.show()
+
